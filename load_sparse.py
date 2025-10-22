@@ -230,7 +230,7 @@ def load_input(path='/data/allen/v1_model/GLIF_network/input_dat.pkl',
         spikes = np.zeros((int(duration / dt), n_neurons))
         for i, sp in zip(input_population[0]['ids'], input_population[0]['spikes']):
             sp = sp[np.logical_and(start < sp, sp < start + duration)] - start
-            sp = (sp / dt).astype(np.int)
+            sp = (sp / dt).astype(np.int64)
             for s in sp:
                 spikes[s, i] += 1
 

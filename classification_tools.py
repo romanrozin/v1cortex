@@ -14,8 +14,8 @@ def create_model(network, input_population, bkg_weights, seq_len=100, n_input=10
     x = tf.keras.layers.Input(shape=(seq_len, n_input,))
     neurons = network['n_nodes']
 
-    if batch_size is None or True:
-        batch_size = tf.shape(x)[0]
+    if batch_size is None:
+        batch_size = tf.keras.ops.shape(x)[0]
     else:
         batch_size = batch_size
 
@@ -29,27 +29,40 @@ def create_model(network, input_population, bkg_weights, seq_len=100, n_input=10
         raise ValueError('Not supported neuron model!')
 
     zero_state = cell.zero_state(batch_size, dtype)
-    initial_state_holder = tf.nest.map_structure(lambda _x: tf.keras.layers.Input(shape=_x.shape[1:]), zero_state)
-    rnn_initial_state = tf.nest.map_structure(tf.identity, initial_state_holder)
     
+    # Keras 3 requires inputs to be flattened
+    state_components = tf.nest.flatten(zero_state)
+    component_shapes = [component.shape for component in state_components]
+    input_layers = [
+        tf.keras.layers.Input(
+            batch_shape=(None,) + shape[1:],
+            name=f'input_layer_{i}'
+        )
+        for i, shape in enumerate(component_shapes)
+    ]
+
+    # Pack back into nested structure for RNN
+    initial_state_holder = tf.nest.pack_sequence_as(zero_state, input_layers)
+    rnn_initial_state = initial_state_holder
     
     rnn_inputs = models.SparseLayer(
         cell.input_indices, cell.input_weight_values, cell.input_dense_shape,
         cell.bkg_weights, down_sampled_decode_noise_path=down_sampled_decode_noise_path,
-        use_decoded_noise=use_decoded_noise, dtype=dtype, scale=scale, name='input_layer')(x)
+        use_decoded_noise=use_decoded_noise, dtype=dtype, scale=scale, name='input_layer_sparse')(x)
 
-    rnn_inputs = tf.cast(rnn_inputs, dtype)
+    rnn_inputs = tf.keras.ops.cast(rnn_inputs, dtype)
    
     rnn = tf.keras.layers.RNN(cell, return_sequences=True, return_state=return_state, name='rsnn')
-    out = rnn(rnn_inputs, initial_state=rnn_initial_state,
-              constants=tf.zeros((batch_size,), name='enable_state_gradients'))
+    out = rnn(rnn_inputs, initial_state=rnn_initial_state)
+    # constants=tf.zeros((batch_size,)), name='enable_state_gradients'
     if return_state:
         hidden = out[0]        
     else:
         hidden = out
-    spikes = hidden[0]
-    voltage = hidden[1]
-    rate = tf.cast(tf.reduce_mean(spikes, (1, 2)), tf.float32)
+    # In Keras 3 RNN output is a concatenated tensor instead of a tuple
+    spikes = hidden[..., :network['n_nodes']]
+    voltage = hidden[..., network['n_nodes']:network['n_nodes']*2]
+    # rate = tf.keras.ops.cast(tf.keras.ops.mean(spikes, axis=(1, 2)), tf.float32)
 
     if neuron_output:
         indices = network['synapses']['indices']
@@ -62,44 +75,44 @@ def create_model(network, input_population, bkg_weights, seq_len=100, n_input=10
         print(f'> Readout synapses {num_readout_synapses}')
         print(f'> Synapses per readout neuron {np.mean(num_synapses_per_neuron):.1f}')
         
-        output_spikes = 1 / dampening_factor * spikes + (1 - 1 / dampening_factor) * tf.stop_gradient(spikes)
+        output_spikes = 1 / dampening_factor * spikes + (1 - 1 / dampening_factor) * tf.keras.ops.stop_gradient(spikes)
         scale = (1 + tf.nn.softplus(tf.keras.layers.Dense(1)(tf.zeros((1, 1)))))
         if output_mode == 'garrett':
-            output = tf.gather(output_spikes, network['localized_readout_neuron_ids_0'], axis=2)
-            output = tf.reduce_mean(output, -1)
-            # thresh = tf.keras.layers.Dense(1)(tf.zeros_like(output))
-            thresh = tf.zeros_like(output) + .01
-            output = tf.stack([thresh[..., 0], output[..., -1]], -1) * scale
-            # output *= (1 + tf.nn.softplus(tf.keras.layers.Dense(1)(tf.zeros_like(spikes[..., :1]))))
+            output = tf.keras.layers.Lambda(lambda x: tf.gather(x, network['localized_readout_neuron_ids_0'], axis=2))(output_spikes)
+            output = tf.keras.ops.mean(output, -1)
+            # thresh = tf.keras.layers.Dense(1)(tf.keras.ops.zeros_like(output))
+            thresh = tf.keras.ops.zeros_like(output) + .01
+            output = tf.keras.ops.stack([thresh[..., 0], output[..., -1]], -1) * scale
+            # output *= (1 + tf.nn.softplus(tf.keras.layers.Dense(1)(tf.keras.ops.zeros_like(spikes[..., :1]))))
         elif output_mode == 'vcd_grating':
-            output = tf.gather(output_spikes, network['localized_readout_neuron_ids_1'], axis=2)
-            output = tf.reduce_mean(output, -1)
-            thresh = tf.zeros_like(output) + .01
-            output = tf.stack([thresh[..., 0], output[..., -1]], -1) * scale
+            output = tf.keras.layers.Lambda(lambda x: tf.gather(x, network['localized_readout_neuron_ids_1'], axis=2))(output_spikes)
+            output = tf.keras.ops.mean(output, -1)
+            thresh = tf.keras.ops.zeros_like(output) + .01
+            output = tf.keras.ops.stack([thresh[..., 0], output[..., -1]], -1) * scale
         elif output_mode == 'ori_diff':
-            output = tf.gather(output_spikes, network['localized_readout_neuron_ids_2'], axis=2)
-            output = tf.reduce_mean(output, -1)
-            thresh = tf.zeros_like(output) + .01
-            output = tf.stack([thresh[..., 0], output[..., -1]], -1) * scale
+            output = tf.keras.layers.Lambda(lambda x: tf.gather(x, network['localized_readout_neuron_ids_2'], axis=2))(output_spikes)
+            output = tf.keras.ops.mean(output, -1)
+            thresh = tf.keras.ops.zeros_like(output) + .01
+            output = tf.keras.ops.stack([thresh[..., 0], output[..., -1]], -1) * scale
 
         elif output_mode == 'evidence':
-            output1 = tf.gather(output_spikes, network['localized_readout_neuron_ids_3'], axis=2)
-            output2 = tf.gather(output_spikes, network['localized_readout_neuron_ids_4'], axis=2)
-            output1 = tf.reduce_mean(output1, -1)
-            output2 = tf.reduce_mean(output2, -1)
-            output = tf.stack([output1[..., -1], output2[..., -1]], -1) * scale
+            output1 = tf.keras.layers.Lambda(lambda x: tf.gather(x, network['localized_readout_neuron_ids_3'], axis=2))(output_spikes)
+            output2 = tf.keras.layers.Lambda(lambda x: tf.gather(x, network['localized_readout_neuron_ids_4'], axis=2))(output_spikes)
+            output1 = tf.keras.ops.mean(output1, -1)
+            output2 = tf.keras.ops.mean(output2, -1)
+            output = tf.keras.ops.stack([output1[..., -1], output2[..., -1]], -1) * scale
         elif output_mode == '10class':
             outputs = []
             for i in range(10):
-                t_output = tf.gather(output_spikes, network[f'localized_readout_neuron_ids_{i + 5}'], axis=2)
-                t_output = tf.reduce_mean(t_output, -1)
+                t_output = tf.keras.layers.Lambda(lambda x: tf.gather(x, network[f'localized_readout_neuron_ids_{i + 5}'], axis=2))(output_spikes)
+                t_output = tf.keras.ops.mean(t_output, -1)
                 outputs.append(t_output)
             output = tf.concat(outputs, -1) * scale
         else:
             raise ValueError(f'Unrecognized output_mode: {output_mode}')
     else:
         if lRout_pop != 'all':
-            out_pop_spikes = tf.gather(spikes, network['laminar_indices'][lRout_pop], axis=2)
+            out_pop_spikes = tf.keras.layers.Lambda(lambda x: tf.gather(x, network['laminar_indices'][lRout_pop], axis=2))(spikes)
         else:
             out_pop_spikes = spikes
 
@@ -109,30 +122,31 @@ def create_model(network, input_population, bkg_weights, seq_len=100, n_input=10
         output_all = tf.keras.layers.Dense(18, name='projection', trainable=True,
                     kernel_regularizer=tf.keras.regularizers.l2(L2_factor), kernel_initializer=linear_readout_initializer)(out_pop_spikes)
         if output_mode == 'garrett':
-            output = tf.gather(output_all,[0,1],axis=2)
+            output = tf.keras.layers.Lambda(lambda x: tf.gather(x,[0,1],axis=2))(output_all)
         elif output_mode == 'vcd_grating':
-            output = tf.gather(output_all,[2,3],axis=2)
+            output = tf.keras.layers.Lambda(lambda x: tf.gather(x,[2,3],axis=2))(output_all)
         elif output_mode == 'ori_diff':
-            output = tf.gather(output_all,[4,5],axis=2)
+            output = tf.keras.layers.Lambda(lambda x: tf.gather(x,[4,5],axis=2))(output_all)
         elif output_mode == 'evidence':
-            output = tf.gather(output_all,[6,7],axis=2)
+            output = tf.keras.layers.Lambda(lambda x: tf.gather(x,[6,7],axis=2))(output_all)
         elif output_mode == '10class':
-            output = tf.gather(output_all,tf.range(8,18,1),axis=2)
+            output = tf.keras.layers.Lambda(lambda x: tf.gather(x,tf.range(8,18,1),axis=2))
         else:
             raise ValueError(f'Unrecognized output_mode: {output_mode}')
 
     output = tf.keras.layers.Lambda(lambda _a: _a, name='prediction')(output)
 
-    mean_output = tf.reshape(output, (-1, int(seq_len / down_sample), down_sample, n_output))
-    mean_output = tf.reduce_mean(mean_output, 2)
-    mean_output = tf.nn.softmax(mean_output, axis=-1)    
+    mean_output = tf.keras.ops.reshape(output, (-1, int(seq_len / down_sample), down_sample, n_output))
+    mean_output = tf.keras.ops.mean(mean_output, 2)
+    mean_output = tf.keras.ops.softmax(mean_output, axis=-1)    
 
     if full_output:
         outputs = [mean_output, spikes, voltage]
     else:
         outputs = mean_output
 
-    many_input_model = tf.keras.Model(inputs=[x, initial_state_holder], outputs=outputs)
+    # Use flattened inputs as required by Keras 3
+    many_input_model = tf.keras.Model(inputs=[x] + input_layers, outputs=outputs)
     
     
-    return many_input_model
+    return many_input_model, component_shapes

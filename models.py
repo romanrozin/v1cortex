@@ -61,7 +61,7 @@ class SparseLayer(tf.keras.layers.Layer):
         if use_decoded_noise:
             from scipy.io import loadmat
             tmp = loadmat(down_sampled_decode_noise_path)
-            self.noise_data = tf.convert_to_tensor(tmp['additive_noise'].reshape(-1), dtype=self._compute_dtype)
+            self.noise_data = tf.convert_to_tensor(tmp['additive_noise'].reshape(-1), dtype=self.compute_dtype)
 
     def call(self, inp):
         tf_shp = tf.unstack(tf.shape(inp))
@@ -86,13 +86,13 @@ class SparseLayer(tf.keras.layers.Layer):
             quick_noise = tf.gather(self.noise_data, gen_ind_quick)
             slow_noise = tf.gather(self.noise_data, gen_ind_slow)
 
-            noise_input = tf.cast(tf.ones_like(self._bkg_weights[None, None])*self.scale[0], self._compute_dtype) * quick_noise + \
-                tf.cast(tf.ones_like(self._bkg_weights[None, None])*self.scale[1], self._compute_dtype) * slow_noise
+            noise_input = tf.cast(tf.ones_like(self._bkg_weights[None, None])*self.scale[0], self.compute_dtype) * quick_noise + \
+                tf.cast(tf.ones_like(self._bkg_weights[None, None])*self.scale[1], self.compute_dtype) * slow_noise
         else:
             rest_of_brain = tf.reduce_sum(tf.cast(
-                tf.random.uniform((shp[0], shp[1], 10)) < .1, self._compute_dtype), -1)
+                tf.random.uniform((shp[0], shp[1], 10)) < .1, self.compute_dtype), -1)
             noise_input = tf.cast(
-                self._bkg_weights[None, None], self._compute_dtype) * rest_of_brain[..., None] / 10.
+                self._bkg_weights[None, None], self.compute_dtype) * rest_of_brain[..., None] / 10.
 
         input_current = tf.reshape(
             input_current, (shp[0], shp[1], -1)) + noise_input
@@ -161,8 +161,8 @@ class BillehColumn(tf.keras.layers.Layer):
         n_receptors = network['node_params']['tau_syn'].shape[1]
         self._n_receptors = n_receptors
         self._n_neurons = network['n_nodes']
-        self._dampening_factor = tf.cast(dampening_factor, self._compute_dtype)
-        self._gauss_std = tf.cast(gauss_std, self._compute_dtype)
+        self._dampening_factor = tf.cast(dampening_factor, self.compute_dtype)
+        self._gauss_std = tf.cast(gauss_std, self.compute_dtype)
 
         tau = self._params['C_m'] / self._params['g']
         self._decay = np.exp(-dt / tau)
@@ -185,14 +185,14 @@ class BillehColumn(tf.keras.layers.Layer):
         )
         # useless now; it was for training the neuron parameters
         def _f(_v, trainable=False):
-            return tf.Variable(tf.cast(self._gather(_v), self._compute_dtype), trainable=trainable)
+            return tf.Variable(tf.cast(self._gather(_v), self.compute_dtype), trainable=trainable)
 
         def inv_sigmoid(_x):
             return tf.math.log(_x / (1 - _x))
 
         # useless
         def custom_val(_v, trainable=False):
-            _v = tf.Variable(tf.cast(inv_sigmoid(self._gather(_v)), self._compute_dtype), trainable=trainable)
+            _v = tf.Variable(tf.cast(inv_sigmoid(self._gather(_v)), self.compute_dtype), trainable=trainable)
 
             def _g():
                 return tf.nn.sigmoid(_v.read_value())
@@ -233,33 +233,28 @@ class BillehColumn(tf.keras.layers.Layer):
         print(f'> Input synapses {len(input_indices)}')
         input_dense_shape = (self._n_receptors * self._n_neurons, input_population['n_inputs'])
 
-        self.recurrent_weight_positive = tf.Variable(
-            weights >= 0., name='recurrent_weights_sign', trainable=False)
-        self.input_weight_positive = tf.Variable(
-            input_weights >= 0., name='input_weights_sign', trainable=False)
-        if use_dale_law:
-            self.recurrent_weight_values = tf.Variable(
-                weights * recurrent_weight_scale, name='sparse_recurrent_weights',
-                constraint=SignedConstraint(self.recurrent_weight_positive),
-                trainable=train_recurrent)
-        else:
-            self.recurrent_weight_values = tf.Variable(
-                weights * recurrent_weight_scale, name='sparse_recurrent_weights',
-                constraint=None,
-                trainable=train_recurrent)
+        self.recurrent_weight_positive = weights >= 0.
+        self.input_weight_positive = input_weights >= 0.
+
+        initial_recurrent_weights = weights * recurrent_weight_scale
+        self.recurrent_weight_values = self.add_weight(
+            name='sparse_recurrent_weights',
+            shape=initial_recurrent_weights.shape,
+            initializer=tf.keras.initializers.Constant(initial_recurrent_weights),
+            constraint=SignedConstraint(self.recurrent_weight_positive) if use_dale_law else None,
+            trainable=True
+        )
         self.recurrent_indices = tf.Variable(indices, trainable=False)
         self.recurrent_dense_shape = dense_shape
 
-        if use_dale_law:
-            self.input_weight_values = tf.Variable(
-                input_weights * input_weight_scale, name='sparse_input_weights',
-                constraint=SignedConstraint(self.input_weight_positive),
-                trainable=train_input)
-        else:
-            self.input_weight_values = tf.Variable(
-                input_weights * input_weight_scale, name='sparse_input_weights',
-                constraint=None,
-                trainable=train_input)
+        initial_input_weights = input_weights * input_weight_scale
+        self.input_weight_values = self.add_weight(
+            name="sparse_input_weights",
+            shape=initial_input_weights.shape,
+            initializer=tf.keras.initializers.Constant(initial_input_weights),
+            constraint=SignedConstraint(self.input_weight_positive) if use_dale_law else None,
+            trainable=True
+        )
 
         self.input_indices = tf.Variable(input_indices, trainable=False)
         self.input_dense_shape = input_dense_shape
@@ -309,7 +304,7 @@ class BillehColumn(tf.keras.layers.Layer):
         i_rec = tf.sparse.sparse_dense_matmul(sparse_w_rec, tf.cast(z_buf, tf.float32), adjoint_b=True)
         i_rec = tf.transpose(i_rec)
 
-        rec_inputs = tf.cast(i_rec, self._compute_dtype)
+        rec_inputs = tf.cast(i_rec, self.compute_dtype)
         rec_inputs = tf.reshape(rec_inputs + inputs, (batch_size, self._n_neurons, self._n_receptors))        
 
         new_psc_rise = self.syn_decay * psc_rise + rec_inputs * self.psc_initial
@@ -345,12 +340,20 @@ class BillehColumn(tf.keras.layers.Layer):
 
         if self._return_interal_variables:
             new_ascs = tf.concat((new_asc_1, new_asc_2), -1)
-            outputs = (new_z, new_v * self.voltage_scale + self.voltage_offset, new_ascs, new_psc_rise, new_psc)
+            outputs = tf.concat([new_z, new_v * self.voltage_scale + self.voltage_offset, new_ascs, new_psc_rise, new_psc], axis=-1)
         else:
-            outputs = (new_z, new_v * self.voltage_scale + self.voltage_offset)
+            outputs = tf.concat([new_z, new_v * self.voltage_scale + self.voltage_offset], axis=-1)
         new_state = (new_z_buf, new_v, new_r, new_asc_1, new_asc_2, new_psc_rise, new_psc)
 
         return outputs, new_state
+
+
+    @property
+    def output_size(self):
+        if self._return_interal_variables:
+            return int(self._n_neurons * 7)  # z + v + ascs(2) + psc_rise + psc
+        else:
+            return int(self._n_neurons * 2)  # z + v
 
 def huber_quantile_loss(u, tau, kappa):
     branch_1 = tf.abs(tau - tf.cast(u <= 0, tf.float32)) / (2 * kappa) * tf.square(u)
@@ -359,7 +362,7 @@ def huber_quantile_loss(u, tau, kappa):
 
 
 def compute_spike_rate_distribution_loss(_spikes, target_rate):
-    _rate = tf.reduce_mean(_spikes, (0, 1))
+    _rate = tf.reduce_mean(_spikes, axis=(0, 1))
     ind = tf.range(target_rate.shape[0])
     rand_ind = tf.random.shuffle(ind)
     _rate = tf.gather(_rate, rand_ind)
