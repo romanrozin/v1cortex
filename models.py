@@ -183,6 +183,13 @@ class BillehColumn(tf.keras.layers.Layer):
             n_receptors * self._n_neurons,     # psc rise
             n_receptors * self._n_neurons,     # psc
         )
+        if self._return_interal_variables:
+            self.output_size = int(self._n_neurons * 7)  # z + v + ascs(2) + psc_rise + psc
+        else:
+            self.output_size = int(self._n_neurons * 2)  # z + v
+        self.output_size += np.sum(self.state_size)
+        self.output_size = int(self.output_size)
+        print(self.output_size)
         # useless now; it was for training the neuron parameters
         def _f(_v, trainable=False):
             return tf.Variable(tf.cast(self._gather(_v), self.compute_dtype), trainable=trainable)
@@ -345,15 +352,15 @@ class BillehColumn(tf.keras.layers.Layer):
             outputs = tf.concat([new_z, new_v * self.voltage_scale + self.voltage_offset], axis=-1)
         new_state = (new_z_buf, new_v, new_r, new_asc_1, new_asc_2, new_psc_rise, new_psc)
 
+        flat_states = tf.concat([
+            tf.reshape(new_z_buf, (batch_size, -1)),
+            new_v, new_r, new_asc_1, new_asc_2, 
+            tf.reshape(new_psc_rise, (batch_size, -1)),
+            tf.reshape(new_psc, (batch_size, -1))], axis=-1)
+        outputs = tf.concat([outputs, flat_states], axis=-1)
+
         return outputs, new_state
 
-
-    @property
-    def output_size(self):
-        if self._return_interal_variables:
-            return int(self._n_neurons * 7)  # z + v + ascs(2) + psc_rise + psc
-        else:
-            return int(self._n_neurons * 2)  # z + v
 
 def huber_quantile_loss(u, tau, kappa):
     branch_1 = tf.abs(tau - tf.cast(u <= 0, tf.float32)) / (2 * kappa) * tf.square(u)

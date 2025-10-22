@@ -98,7 +98,7 @@ def main(_):
     noise_scales = [float(a) for a in flags.scale.split(',') if a != '']
 
     with strategy.scope():
-        model = classification_tools.create_model(
+        model, component_shapes = classification_tools.create_model(
             network, input_population, bkg_weights, seq_len=flags.seq_len, n_input=n_input,
             n_output=n_output, dtype=dtype,
             input_weight_scale=flags.input_weight_scale,
@@ -111,16 +111,28 @@ def main(_):
             neuron_model=flags.neuron_model, use_dale_law=flags.use_dale_law, scale=noise_scales,            
         )
 
-        model.build((flags.batch_size, flags.seq_len, n_input))
-        rsnn_layer = model.get_layer('rsnn')
-        rec_weight_regularizer = models.StiffRegularizer(flags.recurrent_weight_regularization,
-                                                         rsnn_layer.cell.recurrent_weight_values)
+        # Keras 3 requires inputs to be flattened
+        input_shapes = [
+            (flags.batch_size, flags.seq_len, n_input),
+            *[(flags.batch_size,) + shape[1:] for shape in component_shapes]
+        ]
 
+        model.build(input_shapes)
+        rsnn_layer = model.get_layer('rsnn')
+        cell = rsnn_layer.cell
+        tf.print(f"> Trainable variables: {len(cell.trainable_variables)}")
+        tf.print(f"> All variables: {len(cell.variables)}")
+        if hasattr(cell, 'recurrent_weight_values'):
+            tf.print(f"> Recurrent weights shape: {cell.recurrent_weight_values.shape}")
+
+        rec_weight_regularizer = models.StiffRegularizer(flags.recurrent_weight_regularization, cell.recurrent_weight_values)
         rate_distribution_regularizer = models.SpikeRateDistributionRegularization(target_firing_rates, flags.rate_cost)
 
         prediction_layer = model.get_layer('prediction')
+        rsnn_sequences = tf.keras.layers.Lambda(lambda x: x[..., :network['n_nodes']*2])(rsnn_layer.output)
+        rsnn_states = tf.keras.layers.Lambda(lambda x: x[..., network['n_nodes']*2:])(rsnn_layer.output)
         extractor_model = tf.keras.Model(inputs=model.inputs,
-                                         outputs=[rsnn_layer.output, model.output, prediction_layer.output])
+                                         outputs=[rsnn_sequences, rsnn_states, model.output, prediction_layer.output])
         loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
             from_logits=False, reduction=tf.keras.losses.Reduction.NONE)
 
@@ -130,7 +142,8 @@ def main(_):
             return tf.nn.compute_average_loss(per_example_loss, global_batch_size=global_batch_size) + rec_weight_loss
 
         
-        optimizer = tf.keras.optimizers.Adam(flags.learning_rate, epsilon=1e-11)    
+        optimizer = tf.keras.optimizers.Adam(flags.learning_rate, epsilon=1e-11)
+        optimizer.build(model.trainable_variables)
 
     def get_dataset_fn(is_test=False, _steps_per_epoch=80):
         def _f(input_context):
@@ -206,17 +219,20 @@ def main(_):
         val_voltage_loss = tf.keras.metrics.Mean()
 
         def reset_train_metrics():
-            train_loss.reset_states(), train_accuracy.reset_states(), train_firing_rate.reset_states()
-            train_rate_loss.reset_states(), train_voltage_loss.reset_states()
+            train_loss.reset_state(), train_accuracy.reset_state(), train_firing_rate.reset_state()
+            train_rate_loss.reset_state(), train_voltage_loss.reset_state()
 
         def reset_validation_metrics():
-            val_loss.reset_states(), val_accuracy.reset_states(), val_firing_rate.reset_states()
-            val_rate_loss.reset_states(), val_voltage_loss.reset_states()
+            val_loss.reset_state(), val_accuracy.reset_state(), val_firing_rate.reset_state()
+            val_rate_loss.reset_state(), val_voltage_loss.reset_state()
 
     def roll_out(_x, _y, _w):
         _initial_state = tf.nest.map_structure(lambda _a: _a.read_value(), state_variables)
-        _out, _p, _ = extractor_model((_x, _initial_state))
-        _z, _v = _out[0]
+        _seq, _st, _p, _ = extractor_model([_x] + list(_initial_state))
+        print(_seq.shape)
+        print(_st.shape)
+        _z = _seq[..., :network['n_nodes']]
+        _v = _seq[..., network['n_nodes']:network['n_nodes']*2]
         voltage_32 = (tf.cast(_v, tf.float32) - rsnn_layer.cell.voltage_offset) / rsnn_layer.cell.voltage_scale
         v_pos = tf.square(tf.nn.relu(voltage_32 - 1.))
         v_neg = tf.square(tf.nn.relu(-voltage_32 + 1.))
@@ -225,27 +241,21 @@ def main(_):
         classification_loss = compute_loss(_y, _p, _w)
         _aux = dict(rate_loss=rate_loss, voltage_loss=voltage_loss)
         _loss = classification_loss + rate_loss + voltage_loss
-        return _out, _p, _loss, _aux
+        return _seq, _st, _p, _loss, _aux, _z
 
     def train_step(_x, _y, _w):
         with tf.GradientTape() as tape:
-            _out, _p, _loss, _aux = roll_out(_x, _y, _w)
+            _seq, _st, _p, _loss, _aux, _z = roll_out(_x, _y, _w)
 
-        _op = train_accuracy.update_state(_y, _p, sample_weight=_w)
-        with tf.control_dependencies([_op]):
-            _op = train_loss.update_state(_loss)
-        _rate = tf.reduce_mean(_out[0][0])
-        with tf.control_dependencies([_op]):
-            _op = train_firing_rate.update_state(_rate)
-        with tf.control_dependencies([_op]):
-            _op = train_rate_loss.update_state(_aux['rate_loss'])
-        with tf.control_dependencies([_op]):
-            _op = train_voltage_loss.update_state(_aux['voltage_loss'])
+        train_accuracy.update_state(_y, _p, sample_weight=_w)
+        train_loss.update_state(_loss)
+        _rate = tf.reduce_mean(_z)
+        train_firing_rate.update_state(_rate)
+        train_rate_loss.update_state(_aux['rate_loss'])
+        train_voltage_loss.update_state(_aux['voltage_loss'])
 
         grad = tape.gradient(_loss, model.trainable_variables)
-        for g, v in zip(grad, model.trainable_variables):
-            with tf.control_dependencies([_op]):
-                _op = optimizer.apply_gradients([(g, v)])
+        optimizer.apply_gradients(zip(grad, model.trainable_variables))
 
     @tf.function
     def distributed_train_step(_x, _y, _w):
@@ -253,61 +263,59 @@ def main(_):
 
     def train_step_continuing(_x, _y, _w):
         with tf.GradientTape() as tape:
-            _out, _p, _loss, _aux = roll_out(_x, _y, _w)
+            _seq, _st, _p, _loss, _aux, _z = roll_out(_x, _y, _w)
 
-        _op = train_accuracy.update_state(_y, _p, sample_weight=_w)
-        with tf.control_dependencies([_op]):
-            _op = train_loss.update_state(_loss)
-        _rate = tf.reduce_mean(_out[0][0])
-        with tf.control_dependencies([_op]):
-            _op = train_firing_rate.update_state(_rate)
-        with tf.control_dependencies([_op]):
-            _op = train_rate_loss.update_state(_aux['rate_loss'])
-        with tf.control_dependencies([_op]):
-            _op = train_voltage_loss.update_state(_aux['voltage_loss'])
-        tf.nest.map_structure(lambda _a, _b: _a.assign(_b), list(state_variables), _out[1:])
+        train_accuracy.update_state(_y, _p, sample_weight=_w)
+        train_loss.update_state(_loss)
+        _rate = tf.reduce_mean(_z)
+        train_firing_rate.update_state(_rate)
+        train_rate_loss.update_state(_aux['rate_loss'])
+        train_voltage_loss.update_state(_aux['voltage_loss'])
+        offset = 0
+        for variable in state_variables:
+            delta = variable.shape[1]
+            reshaped = _st[:, -1, offset:offset+delta]
+            variable.assign(reshaped)
+            offset += delta
+        # tf.nest.map_structure(lambda _a, _b: _a.assign(_b), list(state_variables), _st)
         # grad = tape.gradient(_loss, model.trainable_variables)
         # optimizer.apply_gradients(zip(grad, model.trainable_variables))
         grad = tape.gradient(_loss, model.trainable_variables)
-        for g, v in zip(grad, model.trainable_variables):
-            with tf.control_dependencies([_op]):
-                _op = optimizer.apply_gradients([(g, v)])
+        optimizer.apply_gradients(zip(grad, model.trainable_variables))
 
     @tf.function
     def distributed_train_step_continuing(_x, _y, _w):
         strategy.run(train_step_continuing, args=(_x, _y, _w))
 
     def validation_step(_x, _y, _w):
-        _out, _p, _loss, _aux = roll_out(_x, _y, _w)
-        _op = val_accuracy.update_state(_y, _p, sample_weight=_w)
-        with tf.control_dependencies([_op]):
-            _op = val_loss.update_state(_loss)
-        _rate = tf.reduce_mean(_out[0][0])
-        with tf.control_dependencies([_op]):
-            _op = val_firing_rate.update_state(_rate)
-        with tf.control_dependencies([_op]):
-            _op = val_rate_loss.update_state(_aux['rate_loss'])
-        with tf.control_dependencies([_op]):
-            _op = val_voltage_loss.update_state(_aux['voltage_loss'])
-        # tf.nest.map_structure(lambda _a, _b: _a.assign(_b), list(state_variables), _out[1:])
+        _seq, _st, _p, _loss, _aux, _z = roll_out(_x, _y, _w)
+        val_accuracy.update_state(_y, _p, sample_weight=_w)
+        val_loss.update_state(_loss)
+        _rate = tf.reduce_mean(_z)
+        val_firing_rate.update_state(_rate)
+        val_rate_loss.update_state(_aux['rate_loss'])
+        val_voltage_loss.update_state(_aux['voltage_loss'])
+        # tf.nest.map_structure(lambda _a, _b: _a.assign(_b), list(state_variables), _st)
 
     @tf.function
     def distributed_validation_step(_x, _y, _w):
         strategy.run(validation_step, args=(_x, _y, _w))
 
     def validation_step_continuing(_x, _y, _w):
-        _out, _p, _loss, _aux = roll_out(_x, _y, _w)
-        _op = val_accuracy.update_state(_y, _p, sample_weight=_w)
-        with tf.control_dependencies([_op]):
-            _op = val_loss.update_state(_loss)
-        _rate = tf.reduce_mean(_out[0][0])
-        with tf.control_dependencies([_op]):
-            _op = val_firing_rate.update_state(_rate)
-        with tf.control_dependencies([_op]):
-            _op = val_rate_loss.update_state(_aux['rate_loss'])
-        with tf.control_dependencies([_op]):
-            _op = val_voltage_loss.update_state(_aux['voltage_loss'])
-        tf.nest.map_structure(lambda _a, _b: _a.assign(_b), list(state_variables), _out[1:])
+        _seq, _st, _p, _loss, _aux, _z = roll_out(_x, _y, _w)
+        val_accuracy.update_state(_y, _p, sample_weight=_w)
+        val_loss.update_state(_loss)
+        _rate = tf.reduce_mean(_z)
+        val_firing_rate.update_state(_rate)
+        val_rate_loss.update_state(_aux['rate_loss'])
+        val_voltage_loss.update_state(_aux['voltage_loss'])
+        offset = 0
+        for variable in state_variables:
+            delta = variable.shape[1]
+            reshaped = _st[:, -1, offset:offset+delta]
+            variable.assign(reshaped)
+            offset += delta
+        # tf.nest.map_structure(lambda _a, _b: _a.assign(_b), list(state_variables), _st)
 
     @tf.function
     def distributed_validation_step_continuing(_x, _y, _w):

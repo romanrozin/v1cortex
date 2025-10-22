@@ -53,15 +53,16 @@ def create_model(network, input_population, bkg_weights, seq_len=100, n_input=10
     rnn_inputs = tf.keras.ops.cast(rnn_inputs, dtype)
    
     rnn = tf.keras.layers.RNN(cell, return_sequences=True, return_state=return_state, name='rsnn')
-    out = rnn(rnn_inputs, initial_state=rnn_initial_state)
+    out = rnn(rnn_inputs, initial_state=rnn_initial_state)[0]
     # constants=tf.zeros((batch_size,)), name='enable_state_gradients'
-    if return_state:
-        hidden = out[0]        
-    else:
-        hidden = out
+
     # In Keras 3 RNN output is a concatenated tensor instead of a tuple
-    spikes = hidden[..., :network['n_nodes']]
-    voltage = hidden[..., network['n_nodes']:network['n_nodes']*2]
+    spikes = out[..., :network['n_nodes']]
+    voltage = out[..., network['n_nodes']:network['n_nodes']*2]
+    states = out[..., network['n_nodes']*2:]
+    print(spikes.shape)
+    print(voltage.shape)
+    print(states.shape)
     # rate = tf.keras.ops.cast(tf.keras.ops.mean(spikes, axis=(1, 2)), tf.float32)
 
     if neuron_output:
@@ -141,7 +142,7 @@ def create_model(network, input_population, bkg_weights, seq_len=100, n_input=10
     mean_output = tf.keras.ops.softmax(mean_output, axis=-1)    
 
     if full_output:
-        outputs = [mean_output, spikes, voltage]
+        outputs = [mean_output, spikes, voltage, states]
     else:
         outputs = mean_output
 
