@@ -86,15 +86,11 @@ def select_spatial(x, y, convolved_movie):
 class LGN(object):
     def __init__(self, lgn_data_path=None):
         if lgn_data_path is None:
-            hostname = socket.gethostname()
-            if hostname.count('nvcluster') > 0:
-                path = '/home/ifgovh/tf_billeh_column/lgn_full_col_cells_3.csv'
-            elif hostname.count('juwels') > 0:
-                path = '/p/project/structuretofunction/guozhang/glif_criticality/GLIF_network/lgn_full_col_cells_3.csv'
-            elif hostname.count('pCluster') > 0:
-                path = '/home/guozhang/allen/LGN/LGN/lgn_full_col_cells_3.csv'
-            elif hostname.count('nid') > 0:
-                path = '/users/bp000436/glif_criticality/GLIF_network/lgn_full_col_cells_3.csv'
+            uid = os.getuid()
+            if uid == 0:
+                path = '/root/v1cortex/GLIF_network/lgn_full_col_cells_3.csv'
+            else:
+                path = '/home/uni/mouse/Training-data-driven-V1-model/GLIF_network/lgn_full_col_cells_3.csv'
         else:
             path = lgn_data_path
 

@@ -63,16 +63,17 @@ def main(_):
     # tasks = ['garrett', 'evidence', 'vcd_grating', 'ori_diff', '10class']
 
     # for uneven batch distribution
-    if task_id < 8:
-        task_name = 'garrett'
-    elif task_id < 16:
-        task_name = 'evidence'
-    elif task_id < 24:
-        task_name = 'vcd_grating'
-    elif task_id < 32:
-        task_name = 'ori_diff'
-    elif task_id < 40:
-        task_name = '10class'
+    #if task_id < 8:
+    #    task_name = 'garrett'
+    #elif task_id < 16:
+    #    task_name = 'evidence'
+    #elif task_id < 24:
+    #    task_name = 'vcd_grating'
+    #elif task_id < 32:
+    #    task_name = 'ori_diff'
+    #elif task_id < 40:
+    #    task_name = '10class'
+    task_name = '10class'
 
     # task_name = tasks[task_id % len(tasks)] # this for even distribution
 
@@ -181,7 +182,7 @@ def main(_):
                     data_usage=int(is_test),intensity=flags.sti_intensity,im_slice=flags.im_slice,
                     pre_delay=flags.pre_delay, post_delay=flags.post_delay, current_input=flags.current_input,
                     dataset='mnist', pre_chunks=flags.pre_chunks, resp_chunks=1, from_lgn=flags.from_lgn,
-                    post_chunks=flags.post_chunks).take(n_examples).batch(per_replica_batch_size).shard(8, input_context.input_pipeline_id - 32).prefetch(1) # task_id = input_context.input_pipeline_id, [16,23] is 10class
+                    post_chunks=flags.post_chunks).take(n_examples).batch(per_replica_batch_size).prefetch(tf.data.AUTOTUNE) # task_id = input_context.input_pipeline_id, [16,23] is 10class
                     # post_chunks=flags.post_chunks).take(n_examples).batch(per_replica_batch_size).shard(8, input_context.input_pipeline_id//3).prefetch(8) # 49984=int(50000/64); 8 nodes for each task, so divide it to 8 parts; total 3 tasks, so every 3 task_ids will choose the correct part
             return _data_set
         return _f
@@ -331,8 +332,8 @@ def main(_):
 
     if flags.restore_from != '':
         with strategy.scope():
-            # checkpoint.restore(tf.train.latest_checkpoint(flags.restore_from))
-            checkpoint.restore(flags.restore_from)
+            checkpoint.restore(tf.train.latest_checkpoint(flags.restore_from))
+            # checkpoint.restore(flags.restore_from)
             print(f'Model parameters of {task_name} restored from {flags.restore_from}')
 
     def compose_str(_loss, _acc, _rate, _rate_loss, _voltage_loss):
@@ -354,7 +355,7 @@ def main(_):
             step_counter = tf.Variable(0,trainable=False)
             manager = tf.train.CheckpointManager(
                 checkpoint, directory=cm.paths.results_path, max_to_keep=100,
-                # keep_checkpoint_every_n_hours=2,
+                keep_checkpoint_every_n_hours=1,
                 checkpoint_interval = 1, # save ckpt for data analysis
                 step_counter=step_counter
             )
@@ -381,12 +382,30 @@ def main(_):
             print(f'Epoch {epoch + 1:2d}/{flags.n_epochs} @ {date_str}')
             # quit()
             distributed_reset_state()
+            last_saved_accuracy=0
+            accounter=0
             for step in range(flags.steps_per_epoch):
                 x, y, _, w = next(it)
                 if task_name == 'garrett' or task_name == 'vcd_grating':
                     distributed_train_step_continuing(x, y, w)
                 else:
                     distributed_train_step(x, y, w)
+
+                # Don't save for the first 16 steps
+                cur_accuracy = train_accuracy.result()
+                if step > 16:
+                    if last_saved_accuracy == 0:
+                        # Store
+                        last_saved_accuracy = cur_accuracy
+                    elif last_saved_accuracy > cur_accuracy + 0.03:
+                        # Check counter
+                        if accounter > 16:
+                            print('Consistent accuracy increase detected. Saving.')
+                            save_model()
+                            last_saved_accuracy=cur_accuracy
+                            accounter=0
+                        else:
+                            accounter+=1
 
                 print_str = f'  Step {step + 1:2d}/{flags.steps_per_epoch}: '
                 print_str += compose_str(train_loss.result(), train_accuracy.result(),

@@ -1,0 +1,8 @@
+GLIF_network
+__pycache__
+lgn_model/__pycache__
+lgn_model/*.pkl
+multi_training
+v1cortex-mnist-*
+*.h5
+*.pkl

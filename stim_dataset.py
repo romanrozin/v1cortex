@@ -257,6 +257,11 @@ def generate_VCD_NI_from_path(path, intensity=2, im_slice=100, pre_delay=50, pos
     return data_set
 
 
+def unison_shuffled_copies(a, b):
+    assert len(a) == len(b)
+    p = np.random.permutation(len(a))
+    return a[p], b[p]
+
 def generate_pure_classification_data_set_from_generator(data_usage=0,intensity=1,im_slice=100, pre_delay=50, post_delay=150,
                                                          pre_chunks=2, resp_chunks=1, post_chunks=1, current_input=True,
                                                          dataset='mnist', path=None, imagenet_img_num=60000, rot90=False,
@@ -271,6 +276,11 @@ def generate_pure_classification_data_set_from_generator(data_usage=0,intensity=
         all_ds = tf.keras.datasets.cifar10.load_data()
     elif dataset.lower() == 'mnist':
         all_ds = tf.keras.datasets.mnist.load_data()
+        train, test = all_ds
+        train = unison_shuffled_copies(train[0], train[1])
+        test = unison_shuffled_copies(test[0], test[1])
+        all_ds = (tuple(train), tuple(test))
+
     elif dataset.lower() == 'fashion_mnist':
         all_ds = tf.keras.datasets.fashion_mnist.load_data()
 
