@@ -384,6 +384,8 @@ def main(_):
             distributed_reset_state()
             last_saved_accuracy=0
             accounter=0
+            accounter_thresh=int(np.max(flags.steps_per_epoch / 10), 16)
+            print(f'> Set threshold to {accounter_thresh} steps.')
             for step in range(flags.steps_per_epoch):
                 x, y, _, w = next(it)
                 if task_name == 'garrett' or task_name == 'vcd_grating':
@@ -391,21 +393,26 @@ def main(_):
                 else:
                     distributed_train_step(x, y, w)
 
-                # Don't save for the first 16 steps
-                cur_accuracy = train_accuracy.result()
-                if step > 16:
+                # Don't save for the first accounter_thresh steps
+                current_accuracy = train_accuracy.result()
+                if step > accounter_thresh:
                     if last_saved_accuracy == 0:
-                        # Store
-                        last_saved_accuracy = cur_accuracy
-                    elif last_saved_accuracy > cur_accuracy + 0.03:
+                        # Store for the first time
+                        last_saved_accuracy = current_accuracy
+
+                    elif last_saved_accuracy > current_accuracy + 0.03:
                         # Check counter
-                        if accounter > 16:
-                            print('Consistent accuracy increase detected. Saving.')
+                        if accounter > accounter_thresh:
+                            print(f'> Consistent accuracy increase detected ({last_saved_accuracy} -> {current_accuracy}). Saving.\n')
                             save_model()
-                            last_saved_accuracy=cur_accuracy
-                            accounter=0
+                            last_saved_accuracy = current_accuracy
+                            accounter = 0
                         else:
-                            accounter+=1
+                            # Not at threshold yet
+                            accounter += 1
+                    else:
+                        # No increase - reset the counter
+                        accounter = 0
 
                 print_str = f'  Step {step + 1:2d}/{flags.steps_per_epoch}: '
                 print_str += compose_str(train_loss.result(), train_accuracy.result(),
