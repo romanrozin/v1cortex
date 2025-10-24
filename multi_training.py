@@ -382,10 +382,12 @@ def main(_):
             print(f'Epoch {epoch + 1:2d}/{flags.n_epochs} @ {date_str}')
             # quit()
             distributed_reset_state()
-            last_saved_accuracy=0
-            accounter=0
-            accounter_thresh=int(np.max(flags.steps_per_epoch / 10), 16)
-            print(f'> Set threshold to {accounter_thresh} steps.')
+            accounter = 0
+            accounter_threshold = int(np.max([flags.steps_per_epoch / 10, 16]))
+            critical_steps = list(map(int, np.linspace(accounter_threshold * 3, flags.steps_per_epoch - (accounter_threshold / 2), num=5)))
+            last_saved_accuracy = 0
+            print(f'> Set threshold to {accounter_threshold} steps.')
+            print(f'> Model will be saves at critical steps {critical_steps}.')
             for step in range(flags.steps_per_epoch):
                 x, y, _, w = next(it)
                 if task_name == 'garrett' or task_name == 'vcd_grating':
@@ -393,27 +395,36 @@ def main(_):
                 else:
                     distributed_train_step(x, y, w)
 
-                # Don't save for the first accounter_thresh steps
-                current_accuracy = train_accuracy.result()
-                if step > accounter_thresh:
-                    if last_saved_accuracy == 0:
-                        # Store for the first time
-                        last_saved_accuracy = current_accuracy
-
-                    elif last_saved_accuracy > current_accuracy + 0.03:
-                        # Check counter
-                        if accounter > accounter_thresh:
-                            print(f'> Consistent accuracy increase detected ({last_saved_accuracy} -> {current_accuracy}). Saving.\n')
-                            save_model()
+                # Don't save for the first accounter_threshold steps
+                try:
+                    # Forced save at critical steps
+                    if step in critical_steps:
+                        print(f'> Critical step {step} reached. Saving.\n')
+                        save_model()
+                    
+                    current_accuracy = train_accuracy.result()
+                    if step > accounter_threshold:
+                        if last_saved_accuracy == 0:
+                            # Store for the first time
                             last_saved_accuracy = current_accuracy
-                            accounter = 0
+                            
+                        elif last_saved_accuracy + 0.03 < current_accuracy:
+                            # Check counter
+                            if accounter > accounter_threshold:
+                                print(f'> Consistent accuracy increase detected ({last_saved_accuracy} -> {current_accuracy}). Saving.\n')
+                                save_model()
+                                last_saved_accuracy = current_accuracy
+                                accounter = 0
+                            else:
+                                # Not at threshold yet
+                                accounter += 1
                         else:
-                            # Not at threshold yet
-                            accounter += 1
-                    else:
-                        # No increase - reset the counter
-                        accounter = 0
-
+                            # No increase - reset the counter
+                            accounter = 0                            
+                except Exception as e:
+                    print(e)
+                    save_model()
+                            
                 print_str = f'  Step {step + 1:2d}/{flags.steps_per_epoch}: '
                 print_str += compose_str(train_loss.result(), train_accuracy.result(),
                                          train_firing_rate.result(), train_rate_loss.result(), train_voltage_loss.result())
