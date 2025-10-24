@@ -2,3 +2,5 @@ __pycache__
 lgn_model/__pycache__
 multi_training
 GLIF_network
+lgn_model/*.pkl
+v1cortex-mnist-ckpt-1

@@ -108,7 +108,7 @@ def create_model(network, input_population, bkg_weights, seq_len=100, n_input=10
                 t_output = tf.keras.layers.Lambda(lambda x: tf.gather(x, network[f'localized_readout_neuron_ids_{i + 5}'], axis=2))(output_spikes)
                 t_output = tf.keras.ops.mean(t_output, -1)
                 outputs.append(t_output)
-            output = tf.concat(outputs, -1) * scale
+            output = tf.keras.layers.Lambda(lambda x: tf.concat(x, -1) * scale)(outputs)
         else:
             raise ValueError(f'Unrecognized output_mode: {output_mode}')
     else:

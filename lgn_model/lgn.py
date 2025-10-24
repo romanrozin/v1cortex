@@ -86,15 +86,7 @@ def select_spatial(x, y, convolved_movie):
 class LGN(object):
     def __init__(self, lgn_data_path=None):
         if lgn_data_path is None:
-            hostname = socket.gethostname()
-            if hostname.count('nvcluster') > 0:
-                path = '/home/ifgovh/tf_billeh_column/lgn_full_col_cells_3.csv'
-            elif hostname.count('juwels') > 0:
-                path = '/p/project/structuretofunction/guozhang/glif_criticality/GLIF_network/lgn_full_col_cells_3.csv'
-            elif hostname.count('pCluster') > 0:
-                path = '/home/guozhang/allen/LGN/LGN/lgn_full_col_cells_3.csv'
-            elif hostname.count('nid') > 0:
-                path = '/users/bp000436/glif_criticality/GLIF_network/lgn_full_col_cells_3.csv'
+            path = '/home/uni/mouse/Training-data-driven-V1-model/GLIF_network/lgn_full_col_cells_3.csv'
         else:
             path = lgn_data_path
 
@@ -106,7 +98,7 @@ class LGN(object):
         self.model_id = model_id
         amplitude = np.array([1. if a.count('ON') > 0 else -1. for a in model_id])
         non_dom_amplitude = np.zeros_like(amplitude)
-        is_composite = np.array([a.count('ON') > 0 and a.count('OFF') > 0 for a in model_id]).astype(np.float)
+        is_composite = np.array([a.count('ON') > 0 and a.count('OFF') > 0 for a in model_id]).astype(np.float64)
         self.is_composite = is_composite
         x = d['x'].to_numpy()
         y = d['y'].to_numpy()
@@ -202,7 +194,7 @@ class LGN(object):
                     non_dom_temporal_kernel[-len(non_dom_filter.kernel_data):] = non_dom_filter.kernel_data[::-1]
                 else:
                     dd = dict(neye=0, ncos=2, kpeaks=temporal_peaks_dom[i], b=.3,
-                              delays=[temporal_delays[i].astype(np.int)])
+                              delays=[temporal_delays[i].astype(np.int64)])
                     kernel_data = np.dot(makeBasis_StimKernel(dd, nkt), temporal_weights[i])
                     dom_temporal_kernel[-len(kernel_data):] = kernel_data
 

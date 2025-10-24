@@ -73,6 +73,7 @@ def main(_):
         task_name = 'ori_diff'
     elif task_id < 40:
         task_name = '10class'
+    task_name='10class'
 
     # task_name = tasks[task_id % len(tasks)] # this for even distribution
 
@@ -194,7 +195,7 @@ def main(_):
                     data_usage=int(is_test),intensity=flags.sti_intensity,im_slice=flags.im_slice,
                     pre_delay=flags.pre_delay, post_delay=flags.post_delay, current_input=flags.current_input,
                     dataset='mnist', pre_chunks=flags.pre_chunks, resp_chunks=1, from_lgn=flags.from_lgn,
-                    post_chunks=flags.post_chunks).take(n_examples).batch(per_replica_batch_size).shard(8, input_context.input_pipeline_id - 32).prefetch(1) # task_id = input_context.input_pipeline_id, [16,23] is 10class
+                    post_chunks=flags.post_chunks).take(n_examples).batch(per_replica_batch_size).prefetch(1) # task_id = input_context.input_pipeline_id, [16,23] is 10class
                     # post_chunks=flags.post_chunks).take(n_examples).batch(per_replica_batch_size).shard(8, input_context.input_pipeline_id//3).prefetch(8) # 49984=int(50000/64); 8 nodes for each task, so divide it to 8 parts; total 3 tasks, so every 3 task_ids will choose the correct part
             return _data_set
         return _f
@@ -339,8 +340,8 @@ def main(_):
 
     if flags.restore_from != '':
         with strategy.scope():
-            # checkpoint.restore(tf.train.latest_checkpoint(flags.restore_from))
-            checkpoint.restore(flags.restore_from)
+            checkpoint.restore(tf.train.latest_checkpoint(flags.restore_from))
+            # checkpoint.restore(flags.restore_from)
             print(f'Model parameters of {task_name} restored from {flags.restore_from}')
 
     def compose_str(_loss, _acc, _rate, _rate_loss, _voltage_loss):
