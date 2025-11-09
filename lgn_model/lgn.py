@@ -88,7 +88,7 @@ class LGN(object):
         if lgn_data_path is None:
             uid = os.getuid()
             if uid == 0:
-                path = '/root/v1cortex/GLIF_network/lgn_full_col_cells_3.csv'
+                path = '/root/v1cortex/v1cortex/lgn_full_col_cells_3.csv'
             else:
                 path = '/home/uni/mouse/Training-data-driven-V1-model/GLIF_network/lgn_full_col_cells_3.csv'
         else:

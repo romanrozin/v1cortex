@@ -182,7 +182,7 @@ def main(_):
                     data_usage=int(is_test),intensity=flags.sti_intensity,im_slice=flags.im_slice,
                     pre_delay=flags.pre_delay, post_delay=flags.post_delay, current_input=flags.current_input,
                     dataset='mnist', pre_chunks=flags.pre_chunks, resp_chunks=1, from_lgn=flags.from_lgn,
-                    post_chunks=flags.post_chunks).take(n_examples).batch(per_replica_batch_size).prefetch(tf.data.AUTOTUNE) # task_id = input_context.input_pipeline_id, [16,23] is 10class
+                    post_chunks=flags.post_chunks).take(n_examples).batch(per_replica_batch_size, drop_remainder=True).prefetch(tf.data.AUTOTUNE) # task_id = input_context.input_pipeline_id, [16,23] is 10class
                     # post_chunks=flags.post_chunks).take(n_examples).batch(per_replica_batch_size).shard(8, input_context.input_pipeline_id//3).prefetch(8) # 49984=int(50000/64); 8 nodes for each task, so divide it to 8 parts; total 3 tasks, so every 3 task_ids will choose the correct part
             return _data_set
         return _f
@@ -335,6 +335,7 @@ def main(_):
             checkpoint.restore(tf.train.latest_checkpoint(flags.restore_from))
             # checkpoint.restore(flags.restore_from)
             print(f'Model parameters of {task_name} restored from {flags.restore_from}')
+    print('restored')
 
     def compose_str(_loss, _acc, _rate, _rate_loss, _voltage_loss):
         _s = f'Loss {_loss:.4f}, '
@@ -378,6 +379,7 @@ def main(_):
                 break
 
             it = iter(train_data_set)
+
             date_str = dt.datetime.now().strftime('%d-%m-%Y %H:%M')
             print(f'Epoch {epoch + 1:2d}/{flags.n_epochs} @ {date_str}')
             # quit()
@@ -389,11 +391,16 @@ def main(_):
             print(f'> Set threshold to {accounter_threshold} steps.')
             print(f'> Model will be saves at critical steps {critical_steps}.')
             for step in range(flags.steps_per_epoch):
-                x, y, _, w = next(it)
-                if task_name == 'garrett' or task_name == 'vcd_grating':
-                    distributed_train_step_continuing(x, y, w)
-                else:
-                    distributed_train_step(x, y, w)
+                try:
+                    x, y, _, w = next(it)
+                    if task_name == 'garrett' or task_name == 'vcd_grating':
+                        distributed_train_step_continuing(x, y, w)
+                    else:
+                        distributed_train_step(x, y, w)
+                except Exception as e:
+                    print(e)
+                    print(f"Step {step}, batch shapes: x={x.shape}, y={y.shape}")
+                    continue
 
                 # Don't save for the first accounter_threshold steps
                 try:
